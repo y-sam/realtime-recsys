@@ -1,0 +1,26 @@
+# Single-process Airflow (standalone) — enough for this project and light enough to
+# sit on an 8GB VPS alongside Redpanda/Redis/Postgres.
+# Deliberately separate: run `make airflow-up` only when working on pipelines.
+name: rtrec-airflow
+
+services:
+  airflow:
+    image: apache/airflow:2.10.4-python3.12
+    container_name: rtrec-airflow
+    command: standalone
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@host.docker.internal:5432/${POSTGRES_DB:-rtrec}
+      AIRFLOW_CONN_POSTGRES_OFFLINE: postgresql://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@host.docker.internal:5432/${POSTGRES_DB:-rtrec}
+      AIRFLOW_CONN_REDIS_ONLINE: redis://host.docker.internal:6379/0
+      _PIP_ADDITIONAL_REQUIREMENTS: "redis==5.2.1 pandas==2.2.3 pyarrow==18.1.0"
+    ports:
+      - "8081:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/logs:/opt/airflow/logs
+      - ./data:/opt/airflow/data

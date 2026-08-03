@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+airflow/logs/
+.ipynb_checkpoints/

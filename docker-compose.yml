@@ -1,0 +1,112 @@
+name: rtrec
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.3.1
+    container_name: rtrec-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports:
+      - "19092:19092"   # host access (local dev)
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  console:
+    image: redpandadata/console:v2.7.2
+    container_name: rtrec-console
+    depends_on: [redpanda]
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    profiles: ["dev"]
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: rtrec-redis
+    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: rtrec-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rtrec}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rtrec}
+      POSTGRES_DB: ${POSTGRES_DB:-rtrec}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rtrec}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  simulator:
+    build: ./services/simulator
+    container_name: rtrec-simulator
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      EVENTS_TOPIC: user_events
+      EVENTS_PER_SECOND: ${EVENTS_PER_SECOND:-8}
+      N_USERS: ${N_USERS:-5000}
+      N_ITEMS: ${N_ITEMS:-2000}
+      SEED: 42
+    restart: unless-stopped
+
+  consumer:
+    build: ./services/consumer
+    container_name: rtrec-consumer
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      EVENTS_TOPIC: user_events
+      CONSUMER_GROUP: online-features
+      REDIS_URL: redis://redis:6379/0
+    restart: unless-stopped
+
+  api:
+    build: ./services/api
+    container_name: rtrec-api
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MODEL_DIR: /models
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/models:ro
+    restart: unless-stopped
+
+volumes:
+  redpanda-data:
+  pg-data:
