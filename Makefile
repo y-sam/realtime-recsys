@@ -10,7 +10,11 @@ down:
 	docker compose down
 
 logs:
-	docker compose logs -f simulator consumer api
+	docker compose logs -f simulator consumer sink api
+
+rows:          ## how many raw events have landed in the offline store
+	docker compose exec postgres psql -U rtrec -d rtrec -c \
+	  "SELECT event_type, count(*), max(ts) FROM events GROUP BY 1 ORDER BY 2 DESC;"
 
 topics:        ## create the topic with 3 partitions (key = user_id)
 	docker compose exec redpanda rpk topic create user_events -p 3 -r 1 || true

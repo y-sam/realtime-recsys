@@ -61,6 +61,7 @@ services:
       retries: 5
     volumes:
       - pg-data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
 
   simulator:
     build: ./services/simulator
@@ -90,6 +91,23 @@ services:
       EVENTS_TOPIC: user_events
       CONSUMER_GROUP: online-features
       REDIS_URL: redis://redis:6379/0
+    restart: unless-stopped
+
+  sink:
+    build: ./services/sink
+    container_name: rtrec-sink
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      EVENTS_TOPIC: user_events
+      CONSUMER_GROUP: postgres-sink
+      PG_DSN: postgresql://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@postgres:5432/${POSTGRES_DB:-rtrec}
+      SINK_BATCH_SIZE: ${SINK_BATCH_SIZE:-500}
+      SINK_RETENTION_DAYS: ${SINK_RETENTION_DAYS:-30}
     restart: unless-stopped
 
   api:

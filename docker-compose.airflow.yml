@@ -13,8 +13,9 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@host.docker.internal:5432/${POSTGRES_DB:-rtrec}
       AIRFLOW_CONN_POSTGRES_OFFLINE: postgresql://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@host.docker.internal:5432/${POSTGRES_DB:-rtrec}
-      AIRFLOW_CONN_REDIS_ONLINE: redis://host.docker.internal:6379/0
+      REDIS_URL: redis://host.docker.internal:6379/0
       _PIP_ADDITIONAL_REQUIREMENTS: "redis==5.2.1 pandas==2.2.3 pyarrow==18.1.0"
+      FEATURES_DIR: /opt/airflow/data/features
     ports:
       - "8081:8080"
     extra_hosts:

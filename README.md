@@ -52,6 +52,7 @@ cp .env.example .env
 make dev        # brings everything up + Redpanda Console on :8080
 make topics
 make smoke      # watch 10 raw events flow through
+make rows       # count what landed in the offline store
 make rec        # call the serving endpoint
 make airflow-up # Airflow on :8081 (only when working on pipelines)
 ```
@@ -59,7 +60,7 @@ make airflow-up # Airflow on :8081 (only when working on pipelines)
 ## Roadmap
 
 - [x] **1. Data + simulator** — continuous event stream into Redpanda
-- [ ] **2. Feature pipeline** — Kafka→Postgres sink, 1h/1d/7d window DAGs, push to Redis
+- [x] **2. Feature pipeline** — Kafka→Postgres sink, 1h/1d/7d window DAGs, push to Redis
 - [ ] **3. Models** — two-tower retrieval (PyTorch) + LightGBM ranking; cold-start via context features
 - [ ] **4. Serving** — swap the heuristic ranker for the model, ANN retrieval, p50 < 100ms
 - [ ] **5. Observability** — p50/p95 latency, simulated CTR, catalog coverage and distribution
@@ -80,6 +81,17 @@ moving to MSK or Confluent is a `bootstrap.servers` change.
 
 **Airflow in a separate compose file.** It's the heaviest component and doesn't need the
 same uptime as the API. Bring it up on demand, run the DAG, bring it down.
+
+**At-least-once into the offline store, at-most-once tolerated online.** The sink
+commits Kafka offsets only after the Postgres transaction lands, and writes are made
+idempotent by a primary key on `(event_id, ts)` — a replayed batch is a no-op. The
+online feature consumer runs a separate group with auto-commit: losing a few
+impression counts on a crash is acceptable there, losing training rows is not.
+
+**Aggregate in SQL, transform in pandas.** Memory is the binding constraint on a
+single host, so windowed `GROUP BY` runs in Postgres and only the aggregate crosses
+into the worker; reshaping, smoothing, and serialization happen in pandas where they
+are readable and testable. Full reasoning in [ADR 0001](docs/adr/0001-aggregate-in-sql-transform-in-pandas.md).
 
 **Streaming and batch share one online store.** The consumer covers "right now" (fatigue,
 recent interactions); Airflow covers long windows. The API doesn't know the difference —

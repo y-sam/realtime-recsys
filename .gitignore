@@ -8,3 +8,16 @@ models/*
 !models/.gitkeep
 airflow/logs/
 .ipynb_checkpoints/
+.DS_Store
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
