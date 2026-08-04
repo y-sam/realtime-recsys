@@ -22,9 +22,13 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from sklearn.metrics import log_loss, roc_auc_score
-
-from train_ranker import (FEATURES, IN_PATH, META_PATH, MODEL_PATH, VALID_FRACTION,
-                           add_engineered_features)
+from train_ranker import (
+    FEATURES,
+    IN_PATH,
+    MODEL_PATH,
+    VALID_FRACTION,
+    add_engineered_features,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("compare_rankers")

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -129,7 +129,7 @@ with tab_stream:
             """)
             rows = cur.fetchall()
 
-        st.caption(f"Auto-refreshing every 3s -- last updated {datetime.now().strftime('%H:%M:%S')}")
+        st.caption(f"Auto-refreshing every 3s -- last updated {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Impressions / min", imp)
         c2.metric("Clicks / min", clk)
@@ -146,7 +146,7 @@ with tab_stream:
             hist_df = pd.DataFrame(rows, columns=["minute", "event_type", "count"])
             fig = px.line(hist_df, x="minute", y="count", color="event_type", markers=True,
                           title="Raw events per minute (last 15m)")
-            st.plotly_chart(fig, use_container_width=True, key=f"stream-{datetime.now().timestamp()}")
+            st.plotly_chart(fig, use_container_width=True, key=f"stream-{datetime.now(timezone.utc).timestamp()}")
 
     live_stream()
 
@@ -162,7 +162,7 @@ with tab_model:
             mc1, mc2 = st.columns(2)
             mc1.metric("Validation AUC", f"{m['auc']:.4f}")
             mc2.metric("Validation NDCG@10", f"{m['ndcg10']:.4f}")
-            st.caption(f"Trained at {datetime.fromtimestamp(m['trained_at']).strftime('%Y-%m-%d %H:%M:%S')}")
+            st.caption(f"Trained at {datetime.fromtimestamp(m['trained_at'], tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
         else:
             st.info(f"No metrics file at {MODEL_METRICS_PATH} yet -- run training/train_ranker.py.")
 

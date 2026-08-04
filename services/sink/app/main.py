@@ -24,7 +24,7 @@ import logging
 import os
 import signal
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import psycopg
 from confluent_kafka import Consumer, KafkaError
@@ -37,9 +37,9 @@ TOPIC = os.getenv("EVENTS_TOPIC", "user_events")
 GROUP = os.getenv("CONSUMER_GROUP", "postgres-sink")
 PG_DSN = os.getenv("PG_DSN", "postgresql://rtrec:rtrec@localhost:5432/rtrec")
 
-BATCH_SIZE = int(os.getenv("SINK_BATCH_SIZE", 500))
-BATCH_TIMEOUT_S = float(os.getenv("SINK_BATCH_TIMEOUT_S", 5.0))
-RETENTION_DAYS = int(os.getenv("SINK_RETENTION_DAYS", 30))
+BATCH_SIZE = int(os.getenv("SINK_BATCH_SIZE", "500"))
+BATCH_TIMEOUT_S = float(os.getenv("SINK_BATCH_TIMEOUT_S", "5.0"))
+RETENTION_DAYS = int(os.getenv("SINK_RETENTION_DAYS", "30"))
 
 COLUMNS = (
     "event_id", "event_type", "user_id", "item_id", "session_id", "surface",
@@ -80,8 +80,8 @@ def write_batch(conn: psycopg.Connection, rows: list[tuple]) -> int:
     cols = ", ".join(COLUMNS)
     with conn.cursor() as cur:
         cur.execute(
-            f"CREATE TEMP TABLE IF NOT EXISTS events_staging "
-            f"(LIKE events INCLUDING DEFAULTS) ON COMMIT DELETE ROWS"
+            "CREATE TEMP TABLE IF NOT EXISTS events_staging "
+            "(LIKE events INCLUDING DEFAULTS) ON COMMIT DELETE ROWS"
         )
         with cur.copy(f"COPY events_staging ({cols}) FROM STDIN") as copy:
             for row in rows:
@@ -134,7 +134,7 @@ def main() -> None:
                 continue
             try:
                 rows.append(to_row(json.loads(msg.value())))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- a malformed event must not kill the sink
                 malformed += 1
                 log.warning("skipping malformed event: %s", exc)
 

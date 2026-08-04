@@ -105,7 +105,7 @@ def main() -> None:
             try:
                 apply_event(pipe, json.loads(msg.value()))
                 processed += 1
-            except Exception as exc:  # a malformed event must not kill the consumer
+            except Exception as exc:  # noqa: BLE001 -- a malformed event must not kill the consumer
                 log.warning("dropped event: %s", exc)
         pipe.execute()
 
