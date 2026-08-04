@@ -53,6 +53,29 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+-- Creates daily partitions for the `days_back` days before today. ensure_event_partitions
+-- only covers today forward, so historical backfills need this run first or every insert
+-- with an older ts fails outright (no matching partition). Idempotent: safe to call repeatedly.
+CREATE OR REPLACE FUNCTION ensure_event_partitions_back(days_back INT DEFAULT 28)
+RETURNS void AS $$
+DECLARE
+    d          DATE;
+    part_name  TEXT;
+BEGIN
+    FOR i IN 1..days_back LOOP
+        d := (CURRENT_DATE - i);
+        part_name := format('events_%s', to_char(d, 'YYYYMMDD'));
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name) THEN
+            EXECUTE format(
+                'CREATE TABLE %I PARTITION OF events FOR VALUES FROM (%L) TO (%L)',
+                part_name, d, d + 1
+            );
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+
 -- Drops partitions older than `keep_days`. Raw events are disposable once the
 -- features derived from them have been materialized.
 CREATE OR REPLACE FUNCTION drop_old_event_partitions(keep_days INT DEFAULT 30)

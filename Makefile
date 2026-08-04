@@ -1,4 +1,4 @@
-.PHONY: up down logs dev topics smoke rec airflow-up airflow-down
+.PHONY: up down logs dev topics smoke rec airflow-up airflow-down backfill-partitions
 
 up:            ## start broker + stores + simulator + consumer + api
 	docker compose up -d --build
@@ -11,6 +11,9 @@ down:
 
 logs:
 	docker compose logs -f simulator consumer sink api
+
+backfill-partitions: ## create daily partitions for the last 28 days -- run before loading history
+	docker compose exec postgres psql -U rtrec -d rtrec -c "SELECT ensure_event_partitions_back(28);"
 
 rows:          ## how many raw events have landed in the offline store
 	docker compose exec postgres psql -U rtrec -d rtrec -c \

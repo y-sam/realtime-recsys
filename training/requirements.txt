@@ -1,0 +1,6 @@
+psycopg[binary]==3.2.3
+sqlalchemy==2.0.35
+pandas==2.2.3
+pyarrow==17.0.0
+lightgbm==4.5.0
+scikit-learn==1.5.2

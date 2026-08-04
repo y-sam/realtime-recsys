@@ -8,8 +8,13 @@ shaped like:
       "user_id": "u_42", "item_id": "i_00031", "session_id": "...",
       "surface": "home_feed", "device": "ios", "position": 3,
       "is_new_user": false, "category": "drama", "price_tier": 2,
-      "value": 0.0, "ts": "2026-08-02T12:00:00.123456+00:00"
+      "value": 0.0, "impression_id": "...", "ts": "2026-08-02T12:00:00.123456+00:00"
     }
+
+Every event carries impression_id: impression rows point at their own event_id, and
+click/add_to_cart/purchase rows carry the id of the specific impression that caused
+them. Needed because fatigue re-impresses the same item within a session, so item_id
+alone can't disambiguate which impression a click belongs to.
 
 Purchases are scheduled into the future, so the stream carries a genuine delayed reward.
 """
@@ -45,9 +50,10 @@ def now_iso() -> str:
 
 
 def make_event(event_type: str, user, item, session_id: str, surface: str,
-               position: int, value: float = 0.0) -> dict:
+               position: int, value: float = 0.0, impression_id: str | None = None) -> dict:
+    event_id = str(uuid.uuid4())
     return {
-        "event_id": str(uuid.uuid4()),
+        "event_id": event_id,
         "event_type": event_type,
         "user_id": user.user_id,
         "item_id": item.item_id,
@@ -59,6 +65,7 @@ def make_event(event_type: str, user, item, session_id: str, surface: str,
         "category": item.category,
         "price_tier": item.price_tier,
         "value": value,
+        "impression_id": impression_id if impression_id is not None else event_id,
         "ts": now_iso(),
     }
 
@@ -110,22 +117,27 @@ def main() -> None:
         for pos, item in enumerate(slate):
             p_click = world.click_probability(user, item, settings.base_ctr, settings.fatigue_decay)
             p_click *= 1.0 / (1.0 + 0.15 * pos)          # position bias
-            publish(make_event("impression", user, item, session_id, surface, pos))
+            impression = make_event("impression", user, item, session_id, surface, pos)
+            publish(impression)
             world.register_impression(user, item)
             emitted += 1
+            impression_id = impression["event_id"]
 
             if rng.random() < p_click:
-                publish(make_event("click", user, item, session_id, surface, pos))
+                publish(make_event("click", user, item, session_id, surface, pos,
+                                    impression_id=impression_id))
                 emitted += 1
 
                 if rng.random() < 0.35:
-                    publish(make_event("add_to_cart", user, item, session_id, surface, pos))
+                    publish(make_event("add_to_cart", user, item, session_id, surface, pos,
+                                        impression_id=impression_id))
                     emitted += 1
 
                 if rng.random() < settings.purchase_given_click:
                     delay = rng.expovariate(1.0 / settings.reward_delay_s)
                     value = round(rng.uniform(5, 40) * item.price_tier, 2)
-                    ev = make_event("purchase", user, item, session_id, surface, pos, value=value)
+                    ev = make_event("purchase", user, item, session_id, surface, pos, value=value,
+                                     impression_id=impression_id)
                     heapq.heappush(delayed, (time.time() + delay, ev))
 
         if emitted and emitted % 500 < len(slate):

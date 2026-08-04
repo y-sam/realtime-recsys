@@ -43,7 +43,8 @@ RETENTION_DAYS = int(os.getenv("SINK_RETENTION_DAYS", 30))
 
 COLUMNS = (
     "event_id", "event_type", "user_id", "item_id", "session_id", "surface",
-    "device", "position", "is_new_user", "category", "price_tier", "value", "ts",
+    "device", "position", "is_new_user", "category", "price_tier", "value",
+    "impression_id", "ts",
 )
 
 _running = True
@@ -69,6 +70,7 @@ def to_row(ev: dict) -> tuple:
         ev["category"],
         int(ev["price_tier"]),
         float(ev.get("value", 0.0)),
+        ev.get("impression_id"),   # None for events published before this column existed
         datetime.fromisoformat(ev["ts"]),
     )
 

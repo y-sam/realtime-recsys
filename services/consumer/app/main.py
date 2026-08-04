@@ -6,7 +6,7 @@ Keys written to Redis (namespace `f:`):
     f:u:{user_id}:cat           HASH   category -> click count (online affinity)
     f:u:{user_id}:seen:{item}   STRING impression count, 6h TTL  (fatigue)
     f:u:{user_id}:stats         HASH   impressions/clicks/purchases/last_seen_ts
-    f:i:{item_id}:stats         HASH   impressions/clicks (online CTR -> ranking + popularity)
+    f:i:{item_id}:stats         HASH   impressions/clicks/category/price_tier (online CTR -> ranking + popularity)
     f:pop:1h                    ZSET   top items by clicks in the last hour (cold-start fallback)
 
 Golden rule: serving NEVER aggregates. It only issues GET/HGETALL.
@@ -50,6 +50,9 @@ def apply_event(pipe: redis.client.Pipeline, ev: dict) -> None:
     if etype == "impression":
         pipe.hincrby(f"{ukey}:stats", "impressions", 1)
         pipe.hincrby(f"f:i:{iid}:stats", "impressions", 1)
+        # static per item, cheap to re-set on every impression
+        pipe.hset(f"f:i:{iid}:stats", "category", ev["category"])
+        pipe.hset(f"f:i:{iid}:stats", "price_tier", ev["price_tier"])
         seen = f"{ukey}:seen:{iid}"
         pipe.incr(seen)
         pipe.expire(seen, SEEN_TTL)
