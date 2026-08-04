@@ -14,6 +14,17 @@ strong enough prior that content-based cold-start has little room to beat it.
 Regenerating the dataset at 20k items (`generate_dataset.py`, ~21M rows,
 6-9GB) was proposed to test that hypothesis directly.
 
+## Prior state (commit 61c93e6)
+
+Both models depend on `user_category_share_before`, a feature built on the
+user×category affinity heuristic. That heuristic was dead code until
+`61c93e6` ("Fix impression attribution, wire category affinity, add shadow
+LightGBM ranker"), which reactivated it, fixed click→impression attribution
+so training labels point at the impression that actually caused them, and
+introduced the first LightGBM ranker as a shadow (non-serving) model. That
+commit predates this investigation and isn't otherwise documented — recorded
+here since it's part of how Phase 3 arrived at its current state.
+
 ## What the investigation actually found
 
 Before spending hours on a regeneration, the hypothesis was checked against
