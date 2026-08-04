@@ -4,6 +4,7 @@ Contract: p50 < 100ms. All the cost is Redis I/O, issued as ONE pipeline.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ CANDIDATE_POOL = 200
 MODEL_DIR = os.getenv("MODEL_DIR", "/models")
 MODEL_PATH = os.path.join(MODEL_DIR, "ranker.txt")
 MODEL_META_PATH = os.path.join(MODEL_DIR, "ranker.meta.json")
+MODEL_METRICS_PATH = os.path.join(MODEL_DIR, "ranker_metrics.json")
 TOWER_META_PATH = os.path.join(MODEL_DIR, "two_tower.meta.json")
 ITEM_EMB_PATH = os.path.join(MODEL_DIR, "item_embeddings.npy")
 
@@ -53,9 +55,21 @@ _tower_categories: list[str] | None = None
 _tower_user_stats: dict | None = None
 _tower_w1 = _tower_b1 = _tower_w2 = _tower_b2 = None
 
+_model_version: str | None = None
+_model_trained_at: float | None = None
+_tower_version: str | None = None
+
+
+def _file_digest(*paths: str) -> str:
+    h = hashlib.sha256()
+    for p in paths:
+        with open(p, "rb") as f:
+            h.update(f.read())
+    return h.hexdigest()[:12]
+
 
 def _load_model() -> None:
-    global _booster, _model_features, _category_codes
+    global _booster, _model_features, _category_codes, _model_version, _model_trained_at
     if not (os.path.exists(MODEL_PATH) and os.path.exists(MODEL_META_PATH)):
         log.warning("no model at %s -- shadow scoring disabled", MODEL_PATH)
         return
@@ -64,12 +78,17 @@ def _load_model() -> None:
     _booster = lgb.Booster(model_file=MODEL_PATH)
     _model_features = meta["features"]
     _category_codes = meta["category_codes"]
-    log.info("loaded model from %s (%d features)", MODEL_PATH, len(_model_features))
+    _model_version = _file_digest(MODEL_PATH, MODEL_META_PATH)
+    if os.path.exists(MODEL_METRICS_PATH):
+        with open(MODEL_METRICS_PATH) as f:
+            _model_trained_at = json.load(f).get("trained_at")
+    log.info("loaded model from %s (%d features, version=%s)",
+              MODEL_PATH, len(_model_features), _model_version)
 
 
 def _load_two_tower() -> None:
     global _item_embeddings, _item_ids, _tower_categories, _tower_user_stats
-    global _tower_w1, _tower_b1, _tower_w2, _tower_b2
+    global _tower_w1, _tower_b1, _tower_w2, _tower_b2, _tower_version
     if not (os.path.exists(ITEM_EMB_PATH) and os.path.exists(TOWER_META_PATH)):
         log.warning("no two-tower model at %s -- retrieval stays popularity-only", ITEM_EMB_PATH)
         return
@@ -82,7 +101,9 @@ def _load_two_tower() -> None:
     w = meta["user_tower_weights"]
     _tower_w1, _tower_b1 = np.array(w["w1"]), np.array(w["b1"])
     _tower_w2, _tower_b2 = np.array(w["w2"]), np.array(w["b2"])
-    log.info("loaded two-tower retrieval: %d items x %d dims", *_item_embeddings.shape)
+    _tower_version = _file_digest(ITEM_EMB_PATH, TOWER_META_PATH)
+    log.info("loaded two-tower retrieval: %d items x %d dims, version=%s",
+              *_item_embeddings.shape, _tower_version)
 
 
 @asynccontextmanager
@@ -118,7 +139,22 @@ class RecommendResponse(BaseModel):
 @app.get("/health")
 async def health() -> dict:
     await _r.ping()
-    return {"status": "ok"}
+    warnings = []
+    if RANKING_MODE == "model" and _booster is None:
+        warnings.append("RANKING_MODE=model but no ranker artifact loaded -- serving heuristic scores")
+    if RETRIEVAL_MODE in ("two_tower_only", "blended") and _item_embeddings is None:
+        warnings.append(f"RETRIEVAL_MODE={RETRIEVAL_MODE} but no two-tower artifact loaded -- serving popularity only")
+    return {
+        "status": "ok" if not warnings else "degraded",
+        "ranking_mode": RANKING_MODE,
+        "ranker_loaded": _booster is not None,
+        "ranker_version": _model_version,
+        "ranker_trained_at": _model_trained_at,
+        "retrieval_mode": RETRIEVAL_MODE,
+        "two_tower_loaded": _item_embeddings is not None,
+        "two_tower_version": _tower_version,
+        "warnings": warnings,
+    }
 
 
 async def fetch_user_features(user_id: str) -> tuple[dict, dict, list[str]]:

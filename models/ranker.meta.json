@@ -1,0 +1,27 @@
+{
+  "features": [
+    "position",
+    "is_new_user",
+    "price_tier",
+    "category",
+    "item_impressions_before",
+    "item_clicks_before",
+    "item_ctr_before",
+    "user_clicks_before",
+    "user_category_clicks_before",
+    "user_category_share_before",
+    "user_item_impressions_before"
+  ],
+  "category_codes": {
+    "action": 0,
+    "comedy": 1,
+    "docu": 2,
+    "drama": 3,
+    "horror": 4,
+    "kids": 5,
+    "music": 6,
+    "news": 7,
+    "reality": 8,
+    "sports": 9
+  }
+}

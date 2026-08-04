@@ -6,6 +6,12 @@ data/*
 !data/.gitkeep
 models/*
 !models/.gitkeep
+!models/ranker.txt
+!models/ranker.meta.json
+!models/ranker_metrics.json
+!models/two_tower.pt
+!models/two_tower.meta.json
+!models/item_embeddings.npy
 airflow/logs/
 .ipynb_checkpoints/
 .DS_Store
