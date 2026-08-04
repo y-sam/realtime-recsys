@@ -22,6 +22,9 @@ CATEGORIES = [
 DEVICES = ["ios", "android", "web", "ctv"]
 SURFACES = ["home_feed", "search", "detail_page", "midroll"]
 
+# Matches services/api/app/main.py's cold_start threshold (impressions < 5).
+COLD_START_IMPRESSIONS = 5
+
 
 @dataclass(frozen=True)
 class Item:
@@ -36,8 +39,16 @@ class User:
     user_id: str
     affinity: dict[str, float]        # category -> weight
     device: str
-    is_new: bool
+    is_new: bool                      # permanent archetype: noisier click behavior, see click_probability
     seen: dict[str, int] = field(default_factory=dict)  # item_id -> impression count (fatigue)
+    impressions_seen: int = 0         # lifetime impression count, used for the decaying cold-start signal
+
+    @property
+    def is_cold_start(self) -> bool:
+        """Decaying cold-start signal emitted as `is_new_user` on events -- unlike
+        `is_new`, this reflects actual accumulated history, not how the user was
+        created, so it matches services/api/app/main.py's cold_start definition."""
+        return self.impressions_seen < COLD_START_IMPRESSIONS
 
 
 class World:
@@ -104,3 +115,4 @@ class World:
 
     def register_impression(self, user: User, item: Item) -> None:
         user.seen[item.item_id] = user.seen.get(item.item_id, 0) + 1
+        user.impressions_seen += 1
