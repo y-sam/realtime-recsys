@@ -1,8 +1,27 @@
 """Trains a two-tower retrieval model on the dataset from build_retrieval_dataset.py.
 
-Objective: dot(user_embedding, item_embedding) predicts P(click), pointwise BCE
-against the same abundant natural negatives (unclicked impressions) the ranker
-uses. This is retrieval, not ranking -- see build_retrieval_dataset.py's docstring
+Objective: in-batch sampled softmax over positives only (dot(user_embedding,
+item_embedding) as the logit for the true item vs every other item in the same
+batch). A prior pointwise-BCE version trained against natural class-imbalance
+negatives (~5% CTR) and came out statistically indistinguishable from random on
+recall@K -- that objective is close to optimized by predicting "no" uniformly,
+with no pressure to rank candidates against each other. See
+docs/adr/0003-two-tower-catalog-scale-investigation.md.
+
+Two corrections that in-batch softmax needs to not be misleading at this
+catalog's concentration (77% of impressions in 25% of items):
+  - logQ correction: in-batch negatives are sampled proportional to how often
+    an item is clicked, not uniformly, so popular items appear as a negative
+    far more often than their true relevance warrants. Subtracting log Q(item)
+    (its empirical click frequency) from its logit removes that bias --
+    without it the loss just relearns "penalize popular items."
+  - duplicate-item masking: with 2,000 items and this much concentration, the
+    same item legitimately appears multiple times as different users'
+    positives within one batch. Without masking those out, the objective
+    would penalize the model for scoring a real match highly just because it
+    also happens to be the (correct) answer for a different row.
+
+This is retrieval, not ranking -- see build_retrieval_dataset.py's docstring
 for why fatigue and other (user, item) cross features can't live in either tower.
 
 Item embeddings are precomputed once from each item's most recent known features
@@ -10,11 +29,10 @@ and saved as a static table (models/item_embeddings.npy); that's not a shortcut,
 it's how two-tower retrieval actually serves in production -- item embeddings are
 batch-refreshed, only the user embedding is computed live per request.
 
-Evaluated with recall@K, the metric retrieval actually needs (ranking's AUC answers
-a different question -- "is this one item good", not "is the right item in the
-candidate set at all"): for each held-out click, is the true item among the
-top-K nearest items to that impression's user embedding, versus the K/n_items
-recall a random candidate set would get by chance.
+Evaluated three ways: recall@K against both a random baseline AND a popularity
+baseline (recall@K alone is misleading here -- see the ADR), and a positive-
+control check (percentile rank of the true item among all candidates; 0.5 means
+the model has learned nothing, regardless of what recall@K says).
 """
 from __future__ import annotations
 
@@ -25,7 +43,8 @@ import os
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
+from torch import nn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("train_two_tower")
@@ -48,9 +67,13 @@ USER_NUMERIC = ["user_clicks_before", "is_new_user"] + [f"user_share_{c}" for c 
 CAT_EMBED_DIM = 8
 HIDDEN = 64
 EMBED_DIM = 32
-BATCH_SIZE = 4096
-EPOCHS = 6
+# Smaller than a typical in-batch-softmax batch on purpose: at 2,000 items and
+# this much popularity concentration, a large batch all but guarantees the top
+# items appear dozens of times as duplicate positives (see duplicate masking above).
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "512"))
+EPOCHS = int(os.getenv("EPOCHS", "40"))
 LR = 1e-3
+TEMPERATURE = float(os.getenv("SOFTMAX_TEMPERATURE", "0.1"))
 RECALL_KS = (50, 100, 200)
 
 
@@ -96,36 +119,65 @@ def main() -> None:
     log.info("split: %d train (up to %s) / %d valid (from %s)",
               len(train_df), train_df["ts"].max(), len(valid_df), valid_df["ts"].min())
 
-    item_num, item_stats = standardize(train_df, ITEM_NUMERIC)
-    user_num, user_stats = standardize(train_df, USER_NUMERIC)
-    item_cat = train_df["category_code"].to_numpy()
-    labels = train_df["label"].to_numpy().astype(np.float32)
+    # Stats are computed from the full train_df (all impressions), not the
+    # positives-only slice below -- these calibrate "typical value range" for
+    # standardization and are reused at serving time, so they should reflect
+    # the general population, not just clicks.
+    _, item_stats = standardize(train_df, ITEM_NUMERIC)
+    _, user_stats = standardize(train_df, USER_NUMERIC)
+
+    positives = train_df[train_df["label"] == 1].reset_index(drop=True)
+    pos_item_num, _ = standardize(positives, ITEM_NUMERIC, stats=item_stats)
+    pos_user_num, _ = standardize(positives, USER_NUMERIC, stats=user_stats)
+    pos_item_cat = positives["category_code"].to_numpy()
+
+    item_code_of = {iid: i for i, iid in enumerate(positives["item_id"].unique())}
+    item_code = positives["item_id"].map(item_code_of).to_numpy()
+    item_freq = positives["item_id"].value_counts(normalize=True)
+    log_q_by_code = np.zeros(len(item_code_of), dtype=np.float32)
+    for iid, code in item_code_of.items():
+        log_q_by_code[code] = np.log(item_freq[iid])
+
+    log.info("training on %d positives (%d unique items) with in-batch softmax, "
+              "batch_size=%d temperature=%.3f epochs=%d",
+              len(positives), len(item_code_of), BATCH_SIZE, TEMPERATURE, EPOCHS)
 
     item_tower = Tower(len(ITEM_NUMERIC), n_categories=len(CATEGORIES))
     user_tower = Tower(len(USER_NUMERIC))
     opt = torch.optim.Adam(list(item_tower.parameters()) + list(user_tower.parameters()), lr=LR)
-    loss_fn = nn.BCEWithLogitsLoss()
 
-    item_num_t = torch.from_numpy(item_num)
-    item_cat_t = torch.from_numpy(item_cat).long()
-    user_num_t = torch.from_numpy(user_num)
-    labels_t = torch.from_numpy(labels)
+    pos_item_num_t = torch.from_numpy(pos_item_num)
+    pos_item_cat_t = torch.from_numpy(pos_item_cat).long()
+    pos_user_num_t = torch.from_numpy(pos_user_num)
+    item_code_t = torch.from_numpy(item_code).long()
+    log_q_t = torch.from_numpy(log_q_by_code)
 
-    n = len(train_df)
+    n = len(positives)
     for epoch in range(EPOCHS):
         perm = torch.randperm(n)
         total_loss = 0.0
         for start in range(0, n, BATCH_SIZE):
             idx = perm[start:start + BATCH_SIZE]
-            item_emb = item_tower(item_num_t[idx], item_cat_t[idx])
-            user_emb = user_tower(user_num_t[idx])
-            logits = (item_emb * user_emb).sum(-1)
-            loss = loss_fn(logits, labels_t[idx])
+            b = len(idx)
+            item_emb = item_tower(pos_item_num_t[idx], pos_item_cat_t[idx])
+            user_emb = user_tower(pos_user_num_t[idx])
+
+            logits = (user_emb @ item_emb.T) / TEMPERATURE
+            batch_codes = item_code_t[idx]
+            logits = logits - log_q_t[batch_codes].unsqueeze(0)
+
+            same_item = batch_codes.unsqueeze(0) == batch_codes.unsqueeze(1)
+            diag = torch.eye(b, dtype=torch.bool)
+            logits = logits.masked_fill(same_item & ~diag, float("-inf"))
+
+            targets = torch.arange(b)
+            loss = F.cross_entropy(logits, targets)
             opt.zero_grad()
             loss.backward()
             opt.step()
-            total_loss += loss.item() * len(idx)
-        log.info("epoch %d: train bce=%.4f", epoch, total_loss / n)
+            total_loss += loss.item() * b
+        log.info("epoch %d: train softmax-ce=%.4f (random guess in a batch of ~%d = %.4f)",
+                  epoch, total_loss / n, BATCH_SIZE, np.log(BATCH_SIZE))
 
     # --- static item embedding table: each item's most recent known features ---
     latest_items = (df.sort_values("ts").groupby("item_id").tail(1)
@@ -151,13 +203,30 @@ def main() -> None:
     item_id_to_col = {iid: i for i, iid in enumerate(item_ids)}
     true_cols = np.array([item_id_to_col.get(iid, -1) for iid in valid_pos["item_id"]])
     ranks = (-scores).argsort(axis=1)
+    n_items = len(item_ids)
 
-    log.info("recall@K on %d held-out clicks (n_items=%d, random baseline = K/n_items):",
-              len(valid_pos), len(item_ids))
+    # Positive control: where does the model rank the item the user actually
+    # clicked, among all n_items candidates? 0.5 = random, regardless of what
+    # recall@K reports -- see docs/adr/0003.
+    sample = min(3000, len(true_cols))
+    true_rank = np.array([np.where(ranks[i] == true_cols[i])[0][0] for i in range(sample)])
+    pct_rank = true_rank / n_items
+    log.info("positive-control: percentile rank of the true item (0.5=random, lower=better): "
+              "mean=%.4f median=%.4f (n=%d)", pct_rank.mean(), np.median(pct_rank), sample)
+
+    # Popularity baseline: always retrieve the globally most-impressed items,
+    # no personalization at all. recall@K vs random alone doesn't say whether
+    # the model learned anything useful -- this is the baseline that does.
+    pop_score = latest_items.set_index("item_id").loc[item_ids, "item_impressions_before"].to_numpy()
+    pop_order = np.argsort(-pop_score)
+
+    log.info("recall@K on %d held-out clicks (n_items=%d):", len(valid_pos), n_items)
     for k in RECALL_KS:
-        topk = ranks[:, :k]
-        hit = (topk == true_cols[:, None]).any(axis=1).mean()
-        log.info("  recall@%-4d model=%.4f  random_baseline=%.4f", k, hit, k / len(item_ids))
+        hit_model = (ranks[:, :k] == true_cols[:, None]).any(axis=1).mean()
+        pop_topk = set(pop_order[:k].tolist())
+        hit_pop = np.mean([tc in pop_topk for tc in true_cols])
+        log.info("  recall@%-4d model=%.4f  popularity=%.4f  random=%.4f",
+                  k, hit_model, hit_pop, k / n_items)
 
     # The API only ever runs the USER tower live (item embeddings are the precomputed
     # static table above) -- exporting its weights as plain arrays lets serving do the
