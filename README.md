@@ -4,7 +4,8 @@ A low-latency recommendation system fed by a continuous stream of synthetic user
 events. Not a notebook: a running service with an online/offline feature store,
 orchestrated batch training, and observability.
 
-**Demo:** `https://<host>/recommend?user_id=u_42&k=10` · **Showcase UI:** `:8501` · **Event console:** `:8080` · **Metrics:** `:3000`
+**Demo:** `https://<host>/recommend?user_id=u_42&k=10` (placeholder — not deployed publicly
+yet, see [DEPLOY.md](DEPLOY.md)) · **Showcase UI:** `:8501` · **Event console:** `:8080` · **Metrics:** `:3000`
 
 ## Architecture
 
@@ -84,8 +85,14 @@ new host starts empty as expected.
       `RETRIEVAL_MODE=two_tower_only` — chosen by measuring candidate-set recall across
       all three options against real held-out clicks, not by narrative; see the
       retrieval note below for the numbers. Retrieval is exact brute-force search over
-      the ~2k-item catalog, not an ANN index — unnecessary at this scale. p50
-      comfortably under 100ms.
+      the ~2k-item catalog, not an ANN index — unnecessary at this scale.
+      **Service p50/p95 (on-host, no TLS/proxy):** `<pending production measurement,
+      see DEPLOY.md §6a>`. **End-to-end p50/p95 (public URL, includes network + TLS +
+      nginx, measured from `<location>`):** `<pending production measurement, see
+      DEPLOY.md §6b>`. Model artifacts (`models/`) are version-pinned in git rather than
+      generated at boot, so a fresh clone always serves the exact model the code was
+      validated against — `GET /health` reports the loaded ranker/two-tower hash so
+      you can confirm which artifact is live without opening the container.
 - [x] **5. Observability** — p50/p95/p99 `/recommend` latency by stage, catalog
       coverage/concentration, retrieval (two-tower hit rate) and pipeline health
       (consumer lag, feature freshness), offline ranker metrics (AUC, NDCG@10). Grafana dashboard on
