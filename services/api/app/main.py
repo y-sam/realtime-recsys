@@ -31,8 +31,14 @@ TOWER_META_PATH = os.path.join(MODEL_DIR, "two_tower.meta.json")
 ITEM_EMB_PATH = os.path.join(MODEL_DIR, "item_embeddings.npy")
 
 RANKING_MODE = os.getenv("RANKING_MODE", "model")  # "model" or "heuristic"
-RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "blended")  # "blended" or "popularity_only"
-TWO_TOWER_K = int(os.getenv("TWO_TOWER_K", "50"))
+# "two_tower_only" | "blended" | "popularity_only" -- see docs/adr/0003. Measured
+# candidate-set recall (warm users): two_tower_only 0.5329 > blended 0.5239 >
+# popularity_only 0.5221. "blended" unions the model's top TWO_TOWER_K onto the
+# popularity pool, but ~49/50 of those already overlap it at this catalog's
+# concentration, so the union barely differs from popularity_only in practice.
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "two_tower_only")
+TWO_TOWER_K = int(os.getenv("TWO_TOWER_K", "50"))              # RETRIEVAL_MODE=blended supplement size
+TWO_TOWER_PRIMARY_POOL = int(os.getenv("TWO_TOWER_PRIMARY_POOL", str(CANDIDATE_POOL)))  # RETRIEVAL_MODE=two_tower_only
 
 SCORING_POSITION = 0  # position is unknown before ranking; score as if shown in the best slot
 
@@ -144,7 +150,7 @@ def _model_feature_row(stats: dict, category_clicks: float, total_cat_clicks: fl
     return [row[name] for name in _model_features]
 
 
-def _two_tower_candidates(cats: dict, total_cat_clicks: float) -> list[tuple[str, float]]:
+def _two_tower_candidates(cats: dict, total_cat_clicks: float, k: int) -> list[tuple[str, float]]:
     user_numeric_names = (["user_clicks_before", "is_new_user"]
                            + [f"user_share_{c}" for c in _tower_categories])
     values = {"user_clicks_before": total_cat_clicks, "is_new_user": 0.0}
@@ -157,7 +163,7 @@ def _two_tower_candidates(cats: dict, total_cat_clicks: float) -> list[tuple[str
     user_embedding = (h @ _tower_w2.T + _tower_b2)[0]
 
     scores = _item_embeddings @ user_embedding
-    top_idx = np.argpartition(-scores, TWO_TOWER_K)[:TWO_TOWER_K]
+    top_idx = np.argpartition(-scores, k)[:k]
     return [(_item_ids[i], float(scores[i])) for i in top_idx]
 
 
@@ -198,25 +204,35 @@ def rank(candidates: list[tuple[str, float]], cats: dict, item_stats: list[dict]
 async def recommend(user_id: str, k: int = Query(10, ge=1, le=50)) -> RecommendResponse:
     t0 = time.perf_counter()
 
-    stats, cats, recent = await fetch_user_features(user_id)
+    stats, cats, _recent = await fetch_user_features(user_id)
     cold_start = not stats or int(stats.get("impressions", 0)) < 5
     metrics.REQUESTS_TOTAL.labels(cold_start=str(cold_start).lower()).inc()
 
     t_retrieval = time.perf_counter()
-    candidates = await _r.zrevrange("f:pop:1h", 0, CANDIDATE_POOL - 1, withscores=True)
-
-    ann_eligible = _item_embeddings is not None and RETRIEVAL_MODE == "blended" and not cold_start
+    two_tower_usable = _item_embeddings is not None and not cold_start
+    use_two_tower_primary = RETRIEVAL_MODE == "two_tower_only" and two_tower_usable
+    use_two_tower_blend = RETRIEVAL_MODE == "blended" and two_tower_usable
+    two_tower_eligible = use_two_tower_primary or use_two_tower_blend
     two_tower_ids: set[str] = set()
-    if ann_eligible:
-        metrics.ANN_ELIGIBLE_TOTAL.inc()
+
+    if use_two_tower_primary:
+        metrics.TWO_TOWER_ELIGIBLE_TOTAL.inc()
         total_cat_clicks = sum(float(v) for v in cats.values())
-        seen_ids = {item_id for item_id, _ in candidates}
-        added = [pair for pair in _two_tower_candidates(cats, total_cat_clicks)
-                 if pair[0] not in seen_ids]
-        two_tower_ids = {item_id for item_id, _ in added}
-        candidates = candidates + added
-        log.info("retrieval for %s: %d popularity + %d two-tower (new)",
-                  user_id, len(seen_ids), len(added))
+        candidates = _two_tower_candidates(cats, total_cat_clicks, TWO_TOWER_PRIMARY_POOL)
+        two_tower_ids = {item_id for item_id, _ in candidates}
+        log.info("retrieval for %s: two_tower_only, %d candidates", user_id, len(candidates))
+    else:
+        candidates = await _r.zrevrange("f:pop:1h", 0, CANDIDATE_POOL - 1, withscores=True)
+        if use_two_tower_blend:
+            metrics.TWO_TOWER_ELIGIBLE_TOTAL.inc()
+            total_cat_clicks = sum(float(v) for v in cats.values())
+            seen_ids = {item_id for item_id, _ in candidates}
+            added = [pair for pair in _two_tower_candidates(cats, total_cat_clicks, TWO_TOWER_K)
+                     if pair[0] not in seen_ids]
+            two_tower_ids = {item_id for item_id, _ in added}
+            candidates = candidates + added
+            log.info("retrieval for %s: %d popularity + %d two-tower (new)",
+                      user_id, len(seen_ids), len(added))
     metrics.STAGE_SECONDS.labels(stage="retrieval").observe(time.perf_counter() - t_retrieval)
 
     if not candidates:
@@ -240,8 +256,8 @@ async def recommend(user_id: str, k: int = Query(10, ge=1, le=50)) -> RecommendR
     for item in top_k:
         if item.item_id in two_tower_ids:
             item.retrieved_via = "two_tower"
-    if ann_eligible and any(item.item_id in two_tower_ids for item in top_k):
-        metrics.ANN_HIT_TOTAL.inc()
+    if two_tower_eligible and any(item.item_id in two_tower_ids for item in top_k):
+        metrics.TWO_TOWER_HIT_TOTAL.inc()
     if top_k:
         try:
             served_pipe = _r.pipeline(transaction=False)

@@ -14,9 +14,18 @@ from datetime import datetime
 import psycopg
 from confluent_kafka import Consumer, TopicPartition
 from confluent_kafka.admin import AdminClient
+
 # confluent-kafka 2.6.1 only exposes this under a private name.
-from confluent_kafka.admin import _ConsumerGroupTopicPartitions as ConsumerGroupTopicPartitions
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from confluent_kafka.admin import (
+    _ConsumerGroupTopicPartitions as ConsumerGroupTopicPartitions,
+)
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 from redis.asyncio import Redis
 
 log = logging.getLogger("metrics")
@@ -35,11 +44,11 @@ STAGE_SECONDS = Histogram(
 REQUESTS_TOTAL = Counter(
     "recsys_recommend_requests_total", "Total /recommend calls", ["cold_start"],
 )
-ANN_ELIGIBLE_TOTAL = Counter(
-    "recsys_ann_eligible_total", "Requests where two-tower retrieval was eligible to run",
+TWO_TOWER_ELIGIBLE_TOTAL = Counter(
+    "recsys_two_tower_eligible_total", "Requests where two-tower retrieval was eligible to run",
 )
-ANN_HIT_TOTAL = Counter(
-    "recsys_ann_hit_total", "Of eligible requests, how many had a two-tower-sourced item in the final top-k",
+TWO_TOWER_HIT_TOTAL = Counter(
+    "recsys_two_tower_hit_total", "Of eligible requests, how many had a two-tower-sourced item in the final top-k",
 )
 
 CATALOG_COVERAGE = Gauge("recsys_catalog_coverage_ratio", "Distinct items served / total catalog size")
@@ -112,7 +121,7 @@ def _consumer_lag_sync() -> float:
 
         offsets_future = admin.list_consumer_group_offsets([ConsumerGroupTopicPartitions(CONSUMER_GROUP)])
         committed = {}
-        for group, result in offsets_future.items():
+        for result in offsets_future.values():
             for tp in result.result().topic_partitions:
                 committed[tp.partition] = tp.offset
 

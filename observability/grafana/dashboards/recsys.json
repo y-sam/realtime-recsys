@@ -76,12 +76,12 @@
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }
     },
     {
-      "id": 21, "type": "stat", "title": "Two-tower ANN hit rate (1h) — share of eligible requests where a two-tower candidate made the final top-k",
+      "id": 21, "type": "stat", "title": "Two-tower retrieval hit rate (1h) — share of eligible requests where a two-tower candidate made the final top-k",
       "gridPos": { "h": 6, "w": 8, "x": 0, "y": 18 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
       "targets": [
         {
-          "expr": "sum(increase(recsys_ann_hit_total[1h])) / sum(increase(recsys_ann_eligible_total[1h]))"
+          "expr": "sum(increase(recsys_two_tower_hit_total[1h])) / sum(increase(recsys_two_tower_eligible_total[1h]))"
         }
       ]
     },
