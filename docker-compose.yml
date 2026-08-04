@@ -14,7 +14,7 @@ services:
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
     ports:
-      - "19092:19092"   # host access (local dev)
+      - "127.0.0.1:19092:19092"   # host-only; reach it over an SSH tunnel, never public
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
       interval: 10s
@@ -30,15 +30,15 @@ services:
     environment:
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"   # host-only; reach it over an SSH tunnel, never public
     profiles: ["dev"]
 
   redis:
     image: redis:7.4-alpine
     container_name: rtrec-redis
     command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"   # compose-internal only -- no service outside this stack needs it
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -52,8 +52,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-rtrec}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rtrec}
       POSTGRES_DB: ${POSTGRES_DB:-rtrec}
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"   # compose-internal only -- no service outside this stack needs it
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rtrec}"]
       interval: 10s
@@ -129,7 +129,8 @@ services:
       PG_DSN: postgresql://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@postgres:5432/${POSTGRES_DB:-rtrec}
       N_ITEMS: ${N_ITEMS:-2000}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"   # public access goes through the host nginx reverse proxy,
+                                 # not this port -- see DEPLOY.md
     volumes:
       - ./models:/models:ro
     restart: unless-stopped
@@ -140,7 +141,7 @@ services:
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"   # host-only; reach it over an SSH tunnel, never public
     depends_on:
       - api
     restart: unless-stopped
@@ -157,7 +158,7 @@ services:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"   # host-only; reach it over an SSH tunnel, never public
     depends_on:
       - prometheus
     restart: unless-stopped
@@ -183,7 +184,7 @@ services:
     volumes:
       - ./models:/models:ro
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"   # host-only; reach it over an SSH tunnel, never public
     restart: unless-stopped
     profiles: ["dev"]
 
