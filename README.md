@@ -4,7 +4,7 @@ A low-latency recommendation system fed by a continuous stream of synthetic user
 events. Not a notebook: a running service with an online/offline feature store,
 orchestrated batch training, and observability.
 
-**Demo:** `https://<host>/recommend?user_id=u_42&k=10` · **Event console:** `:8080`
+**Demo:** `https://<host>/recommend?user_id=u_42&k=10` · **Showcase UI:** `:8501` · **Event console:** `:8080` · **Metrics:** `:3000`
 
 ## Architecture
 
@@ -28,9 +28,12 @@ orchestrated batch training, and observability.
             │   Redis   │  online store: recent items, affinity, fatigue, CTR, top-1h
             └────┬──────┘
             ┌────▼──────┐
-            │  FastAPI  │  retrieval → ranking → rerank   (target p50 < 100ms)
+            │  FastAPI  │  retrieval → ranking → rerank*  (target p50 < 100ms)
             └───────────┘
 ```
+<sub>*rerank is currently a measured no-op — final truncation/assembly only, no diversity or business-rule logic yet.</sub>
+
+
 
 ## What the stream models, and why
 
@@ -49,7 +52,7 @@ Every property of the simulator exists because the system has to handle it:
 
 ```bash
 cp .env.example .env
-make dev        # brings everything up + Redpanda Console on :8080
+make dev        # brings everything up + Redpanda Console :8080, Grafana :3000, showcase UI :8501
 make topics
 make smoke      # watch 10 raw events flow through
 make rows       # count what landed in the offline store
@@ -61,9 +64,29 @@ make airflow-up # Airflow on :8081 (only when working on pipelines)
 
 - [x] **1. Data + simulator** — continuous event stream into Redpanda
 - [x] **2. Feature pipeline** — Kafka→Postgres sink, 1h/1d/7d window DAGs, push to Redis
-- [ ] **3. Models** — two-tower retrieval (PyTorch) + LightGBM ranking; cold-start via context features
-- [ ] **4. Serving** — swap the heuristic ranker for the model, ANN retrieval, p50 < 100ms
-- [ ] **5. Observability** — p50/p95 latency, simulated CTR, catalog coverage and distribution
+- [x] **3. Models** — LightGBM ranking and two-tower retrieval (PyTorch), both trained on
+      point-in-time-correct features and validated offline before promotion
+      (`training/compare_rankers.py`, `train_two_tower.py`'s recall@K). Cold-start still
+      uses the popularity heuristic, not dedicated context-feature modeling — neither
+      model showed validated signal for users with no history. `training/build_dataset.py`
+      loads full history into memory and, at ~4.2M rows, already OOMs a 3GB container —
+      needs a bounded window (or chunked read) before the next training run, not a
+      hypothetical future problem.
+- [x] **4. Serving** — the LightGBM ranker drives ranking for warm users (`RANKING_MODE`,
+      reversible without a deploy); two-tower candidates are blended into retrieval for
+      warm users (`RETRIEVAL_MODE`), additive rather than a replacement since recall@K
+      was real but modest. Retrieval is exact brute-force search over the ~2k-item
+      catalog, not an ANN index — unnecessary at this scale. p50 comfortably under 100ms.
+- [x] **5. Observability** — p50/p95/p99 `/recommend` latency by stage, catalog
+      coverage/concentration, retrieval (ANN hit rate) and pipeline health (consumer lag,
+      feature freshness), offline ranker metrics (AUC, NDCG@10). Grafana dashboard on
+      `:3000` (`make dev`). See [ADR 0002](docs/adr/0002-simulator-recommender-decoupling.md)
+      for why "simulated CTR" is explicitly not recommendation CTR yet.
+- [ ] **6. Closed-loop online evaluation** — have the simulator call `/recommend` and
+      simulate clicks against the returned slate instead of sampling independently,
+      enabling a real online model-vs-heuristic CTR comparison. Planned, not built:
+      it's a bigger architectural change than the rest of observability, and depends on
+      having a model worth comparing online in the first place. See ADR 0002.
 
 ## Infrastructure decisions (trade-offs)
 
@@ -96,3 +119,11 @@ are readable and testable. Full reasoning in [ADR 0001](docs/adr/0001-aggregate-
 **Streaming and batch share one online store.** The consumer covers "right now" (fatigue,
 recent interactions); Airflow covers long windows. The API doesn't know the difference —
 it reads everything from Redis with `GET`/`HGETALL`, with no aggregation in the request path.
+
+**The simulator never calls `/recommend`.** It samples independently via `world.py`'s
+Zipf/affinity model, deliberately decoupled from anything this system recommends — that's
+what keeps every offline evaluation in `training/` (AUC, NDCG@10, recall@K) honest: the
+ground truth doesn't know what the model would have done. The cost is that there's no
+live recommendation-CTR signal yet, only an environment-baseline one. Full reasoning,
+and the condition for closing that loop, in
+[ADR 0002](docs/adr/0002-simulator-recommender-decoupling.md).

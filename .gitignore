@@ -10,6 +10,7 @@ airflow/logs/
 .ipynb_checkpoints/
 .DS_Store
 SNAPSHOT.md
+.claude
 
 # Python tooling caches
 .pytest_cache/

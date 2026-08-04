@@ -1,0 +1,167 @@
+{
+  "uid": "recsys-observability",
+  "title": "Real-time RecSys — Observability",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "row", "title": "Latency (/recommend, by stage)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "p50 latency by stage",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(recsys_recommend_stage_seconds_bucket[5m])) by (le, stage))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "p95 latency by stage",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(recsys_recommend_stage_seconds_bucket[5m])) by (le, stage))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "p99 latency by stage",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(recsys_recommend_stage_seconds_bucket[5m])) by (le, stage))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+
+    {
+      "id": 10, "type": "row", "title": "Traffic",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "/recommend request rate by cold_start",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(recsys_recommend_requests_total[5m])) by (cold_start)",
+          "legendFormat": "cold_start={{cold_start}}"
+        }
+      ]
+    },
+    {
+      "id": 12, "type": "stat", "title": "Cold-start share of traffic (15m)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(rate(recsys_recommend_requests_total{cold_start=\"true\"}[15m])) / sum(rate(recsys_recommend_requests_total[15m]))"
+        }
+      ]
+    },
+
+    {
+      "id": 20, "type": "row", "title": "Retrieval health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }
+    },
+    {
+      "id": 21, "type": "stat", "title": "Two-tower ANN hit rate (1h) — share of eligible requests where a two-tower candidate made the final top-k",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "expr": "sum(increase(recsys_ann_hit_total[1h])) / sum(increase(recsys_ann_eligible_total[1h]))"
+        }
+      ]
+    },
+    {
+      "id": 22, "type": "stat", "title": "Catalog coverage ratio (distinct items served / catalog size)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "expr": "recsys_catalog_coverage_ratio" }]
+    },
+    {
+      "id": 23, "type": "stat", "title": "Recommendation concentration (Gini, 0=uniform 1=one item)",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "expr": "recsys_catalog_concentration_gini" }]
+    },
+    {
+      "id": 24, "type": "stat", "title": "Top-10 items' share of all served recommendation slots",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "expr": "recsys_catalog_top10_share" }]
+    },
+
+    {
+      "id": 30, "type": "row", "title": "Pipeline health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }
+    },
+    {
+      "id": 31, "type": "timeseries", "title": "Consumer lag (online-features group, messages)",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [{ "expr": "recsys_consumer_lag_messages" }]
+    },
+    {
+      "id": 32, "type": "timeseries", "title": "Feature freshness (seconds since sampled f:u:*:stats key last written)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 31 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "expr": "recsys_feature_freshness_seconds" }]
+    },
+
+    {
+      "id": 40, "type": "row", "title": "Simulated environment (NOT recommendation performance)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 }
+    },
+    {
+      "id": 41, "type": "text", "title": "",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 39 },
+      "options": {
+        "mode": "markdown",
+        "content": "**This panel measures the raw simulated event stream, not this system's recommendations.** The simulator (`services/simulator`) samples independently via `world.py`'s Zipf/affinity model and never calls `/recommend` — that separation is deliberate (see `docs/adr/0002-simulator-recommender-decoupling.md`), and it means the number below reflects the *environment's* baseline click behavior, not how good any recommendation is. It will read the same regardless of which ranker or retrieval mode is active. Closing that loop is planned as Phase 6, not yet built."
+      }
+    },
+    {
+      "id": 42, "type": "stat", "title": "Simulated stream CTR (environment baseline, last 1h)",
+      "description": "clicks / impressions in the raw event stream, last 1h. NOT the CTR of served recommendations — the simulator does not call /recommend. See the panel above.",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 43 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 0.2 }, "overrides": [] },
+      "targets": [{ "expr": "recsys_simulated_stream_ctr" }]
+    },
+
+    {
+      "id": 50, "type": "row", "title": "Offline ranker metrics (as of last training run, not live)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 }
+    },
+    {
+      "id": 51, "type": "stat", "title": "Offline validation AUC",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "expr": "recsys_offline_ranker_auc" }]
+    },
+    {
+      "id": 52, "type": "stat", "title": "Offline validation NDCG@10 (grouped by real session_id)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [{ "expr": "recsys_offline_ranker_ndcg10" }]
+    },
+    {
+      "id": 53, "type": "stat", "title": "Model last trained at",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 50 },
+      "fieldConfig": { "defaults": { "unit": "dateTimeAsIso" }, "overrides": [] },
+      "targets": [{ "expr": "recsys_offline_ranker_trained_at_timestamp * 1000" }]
+    }
+  ]
+}

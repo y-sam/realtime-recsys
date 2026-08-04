@@ -116,14 +116,76 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379/0
       MODEL_DIR: /models
+      KAFKA_BOOTSTRAP: redpanda:9092
+      EVENTS_TOPIC: user_events
+      CONSUMER_GROUP: online-features
+      PG_DSN: postgresql://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@postgres:5432/${POSTGRES_DB:-rtrec}
+      N_ITEMS: ${N_ITEMS:-2000}
     ports:
       - "8000:8000"
     volumes:
       - ./models:/models:ro
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: rtrec-prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+    restart: unless-stopped
+    profiles: ["dev"]
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: rtrec-grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    profiles: ["dev"]
+
+  dashboard:
+    build: ./services/dashboard
+    container_name: rtrec-dashboard
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      API_URL: http://api:8000
+      PG_DSN: postgresql://${POSTGRES_USER:-rtrec}:${POSTGRES_PASSWORD:-rtrec}@postgres:5432/${POSTGRES_DB:-rtrec}
+      REDIS_URL: redis://redis:6379/0
+      N_ITEMS: ${N_ITEMS:-2000}
+      N_USERS: ${N_USERS:-5000}
+      GRAFANA_URL: http://localhost:3000/d/recsys-observability
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    profiles: ["dev"]
 
 volumes:
   redpanda-data:
