@@ -42,8 +42,6 @@ RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "two_tower_only")
 TWO_TOWER_K = int(os.getenv("TWO_TOWER_K", "50"))              # RETRIEVAL_MODE=blended supplement size
 TWO_TOWER_PRIMARY_POOL = int(os.getenv("TWO_TOWER_PRIMARY_POOL", str(CANDIDATE_POOL)))  # RETRIEVAL_MODE=two_tower_only
 
-SCORING_POSITION = 0  # position is unknown before ranking; score as if shown in the best slot
-
 _r: redis.Redis | None = None
 _booster: lgb.Booster | None = None
 _model_features: list[str] | None = None
@@ -171,7 +169,6 @@ def _model_feature_row(stats: dict, category_clicks: float, total_cat_clicks: fl
     category_code = _category_codes.get(stats.get("category", ""), float("nan"))
     price_tier = float(stats["price_tier"]) if "price_tier" in stats else float("nan")
     row = {
-        "position": SCORING_POSITION,
         "is_new_user": int(cold_start),
         "price_tier": price_tier,
         "category": category_code,

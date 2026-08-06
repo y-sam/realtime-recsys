@@ -1,6 +1,5 @@
 {
   "features": [
-    "position",
     "is_new_user",
     "price_tier",
     "category",
