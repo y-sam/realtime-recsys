@@ -47,7 +47,7 @@ Every property of the simulator exists because the system has to handle it:
 | ~5% of sessions from new users | cold-start is continuous, not an edge case |
 | Re-impressions decay CTR | fatigue modeling in the rerank stage |
 | `purchase` arrives ~45s after the click | delayed reward: the label doesn't exist at serving time |
-| Position bias in the slate | ranking must discount position |
+| Position bias in the slate | ranking must discount position (see the IPW note below — it wasn't, for a while) |
 
 ## Running locally
 
@@ -72,14 +72,17 @@ new host starts empty as expected.
 - [x] **1. Data + simulator** — continuous event stream into Redpanda
 - [x] **2. Feature pipeline** — Kafka→Postgres sink, 1h/1d/7d window DAGs, push to Redis
 - [x] **3. Models** — LightGBM ranking and two-tower retrieval (PyTorch), both trained on
-      point-in-time-correct features and validated offline before promotion. Two "weak
-      result" claims from an earlier pass were both wrong, for two unrelated reasons —
-      retrieval's training objective and cold-start's evaluation split. See the retrieval
-      and cold-start notes below, and
-      [ADR 0003](docs/adr/0003-two-tower-catalog-scale-investigation.md) for the full
-      investigation. `training/build_dataset.py` and `build_retrieval_dataset.py` stream
-      via a server-side cursor and write Parquet incrementally (peak RSS ~614MB, was
-      OOMing a 3GB container at ~4.2M rows before the fix).
+      point-in-time-correct features and validated offline before promotion. Three
+      separate offline-metrics-vs-served-behavior bugs have been found and fixed in this
+      project so far — cold-start's evaluation split, the two-tower's training objective,
+      and the ranker's position feature — and they share a pattern worth reading once:
+      [ADR 0004](docs/adr/0004-offline-metrics-vs-served-behavior.md). See the retrieval,
+      cold-start, and position-bias notes below for each one's specifics, and
+      [ADR 0003](docs/adr/0003-two-tower-catalog-scale-investigation.md) for the
+      retrieval/cold-start investigation in full. `training/build_dataset.py` and
+      `build_retrieval_dataset.py` stream via a server-side cursor and write Parquet
+      incrementally (peak RSS ~614MB, was OOMing a 3GB container at ~4.2M rows before
+      the fix).
 - [x] **4. Serving** — the LightGBM ranker drives ranking for warm users (`RANKING_MODE`,
       reversible without a deploy). Retrieval for warm users defaults to
       `RETRIEVAL_MODE=two_tower_only` — chosen by measuring candidate-set recall across
@@ -215,3 +218,70 @@ set was still ~95% pre-fix data at retrain time. A clean before/after read needs
 post-fix traffic to actually dominate the training window, which takes real wall-clock
 time to accumulate, not a rerun. Declaring this open rather than chasing a number that
 isn't measurable yet.
+
+**Position was leaking into the ranker as a feature, not being discounted — and it was
+the 4th-highest-gain feature doing it.** `services/api/app/main.py` fed every candidate
+a made-up `position=0` at serving time (`SCORING_POSITION`, since real position isn't
+known before ranking — it's ranking's *output*), while training used real historical
+position on every row. That's train/serve skew on a feature ranked 4th by gain
+(70,520, ahead of `item_ctr_before`), and it showed up as a symptom before anyone went
+looking for a metric: a served top-30 for a genuinely diverse candidate set collapsed to
+**2 distinct `model_score` values**, because the dominant tree splits keyed on a feature
+now falsely constant sent every candidate down the same branch.
+
+Dropping `position` from the feature set would have removed the skew but thrown away the
+debiasing this system is supposed to do (see the stream-properties table above). Instead:
+`position` was removed from the feature vector *and* the position bias was moved into the
+training labels' sample weights via inverse propensity weighting (IPW) — clicked examples
+weighted `1/θ(position)`, non-clicks weight 1, the standard correction for click data
+under an examine-then-click factorization (Joachims et al., 2017). θ was estimated from
+the training split's marginal CTR by position, not assumed:
+
+| pos | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| θ (estimated) | 1.000 | 0.859 | 0.773 | 0.683 | 0.611 | 0.560 | 0.515 | 0.472 | 0.434 | 0.409 |
+
+This is a clean, unconfounded estimate in this environment because the simulator assigns
+slate position independently of relevance (items are drawn by popularity weight; a pure
+multiplicative decay is applied afterward to the already-computed click probability). The
+estimator was chosen before checking the simulator's actual decay function
+(`1/(1+0.15·pos)`, `services/simulator/app/main.py:119`) against it — read only
+afterward, as validation, not as a shortcut. It matches within ~2 points at every
+position (pos 9: estimated 0.409 vs. true 0.426).
+
+Before/after retrain:
+
+| metric | before | after | Δ |
+|---|---|---|---|
+| AUC | 0.7071 | 0.6866 | -0.0205 |
+| logloss | 0.1440 | 0.1360 | -0.0080 (improved) |
+| NDCG@10 | 0.6522 | 0.6681 | +0.0159 (improved) |
+| Spearman(prediction, position) | -0.3052 | -0.0141 | debiasing confirmed |
+
+AUC dropping was expected — the old number was partly borrowed from a feature never
+available at inference. NDCG@10 *rising* was not predicted going in, and it's the more
+interesting result once explained rather than just reported: AUC is pointwise over the
+whole validation set, so any feature globally correlated with the label inflates it —
+including `position`, which the simulator assigns by draw order and which therefore
+carries no information about which candidate is actually best *within* a given session.
+NDCG@10 is grouped by `session_id` and measures exactly that within-session choice. The
+old model was measurably injecting noise into the one ranking decision that matters while
+its aggregate metric looked fine — the offline number was inflated by a feature that was
+actively degrading real ranking quality. The Spearman drop (-0.3052 → -0.0141) is what
+confirms the IPW correction actually took, rather than the fix being "remove the feature
+and hope": the debiased model's predictions are close to uncorrelated with the position
+it never sees, directly or through a correlated proxy.
+
+**Limitation, stated plainly:** the propensity curve above was validated against a
+*known* ground-truth decay function only because this is a synthetic simulator where
+that ground truth exists. In production, propensity has to be *estimated* from
+observational data (result randomization, an EM-style examination model, or similar),
+and that estimate can be wrong in ways nothing here would catch. IPW as a method
+transfers directly; this write-up's clean validation does not — a real deployment needs
+its own propensity-estimation validation before the correction can be trusted the way it
+can be here.
+
+This is the third offline-metrics-vs-served-behavior bug found in this project (after
+`is_new_user` and the two-tower objective above). The pattern across all three — and what
+actually surfaced each one, since it was never a smarter offline metric — is recorded in
+[ADR 0004](docs/adr/0004-offline-metrics-vs-served-behavior.md).
