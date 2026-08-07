@@ -88,11 +88,10 @@ new host starts empty as expected.
       `RETRIEVAL_MODE=two_tower_only` — chosen by measuring candidate-set recall across
       all three options against real held-out clicks, not by narrative; see the
       retrieval note below for the numbers. Retrieval is exact brute-force search over
-      the ~2k-item catalog, not an ANN index — unnecessary at this scale.
-      **Service p50/p95 (on-host, no TLS/proxy):** `<pending production measurement,
-      see DEPLOY.md §6a>`. **End-to-end p50/p95 (public URL, includes network + TLS +
-      nginx, measured from `<location>`):** `<pending production measurement, see
-      DEPLOY.md §6b>`. Model artifacts (`models/`) are version-pinned in git rather than
+      the ~2k-item catalog, not an ANN index — unnecessary at this scale. Service
+      latency (below) is measured, not aspirational, and single-worker throughput
+      turned out to be the real bottleneck — see the latency note below. Model
+      artifacts (`models/`) are version-pinned in git rather than
       generated at boot, so a fresh clone always serves the exact model the code was
       validated against — `GET /health` reports the loaded ranker/two-tower hash so
       you can confirm which artifact is live without opening the container.
@@ -285,3 +284,37 @@ This is the third offline-metrics-vs-served-behavior bug found in this project (
 `is_new_user` and the two-tower objective above). The pattern across all three — and what
 actually surfaced each one, since it was never a smarter offline metric — is recorded in
 [ADR 0004](docs/adr/0004-offline-metrics-vs-served-behavior.md).
+
+**Single-request latency looked fine; concurrency exposed the real bottleneck.**
+Measured on the deploy host (Vultr `vc2-4c-8gb`, 4 shared vCPU / 8GB, x86_64, Atlanta)
+against `127.0.0.1:8000` directly — no TLS, no nginx, no network hop. This is the
+service number, not an end-to-end one; see [DEPLOY.md](DEPLOY.md) for the measurement
+method.
+
+| workers | concurrency | p50 | p95 | p99 | throughput |
+|---|---|---|---|---|---|
+| 1 | c=1 | 26.7ms | 36.0ms | 46.9ms | 35.7 req/s |
+| 1 | c=4 | 98.5ms | 145.8ms | 178.3ms | 38.5 req/s |
+| 1 | c=10 | 257.3ms | 338.4ms | 366.6ms | 37.8 req/s |
+| 4 | c=4 | 37.7ms | 79.9ms | 104.4ms | 84.9 req/s |
+| 4 | c=10 | 100.4ms | 153.9ms | 188.9ms | 98.1 req/s |
+
+At c=1, ~27ms p50 looks like nothing to fix. The signature of the actual problem only
+shows up across the concurrency sweep: with 1 worker, **throughput stayed flat at
+~36-38 req/s regardless of concurrency** — c=10 got no more work done per second than
+c=1, just with each request waiting longer behind the others. `services/api/Dockerfile`
+ran uvicorn with no `--workers` flag; LightGBM and PyTorch inference is synchronous, so
+it blocks the single event loop and every concurrent request serializes behind whichever
+one is currently scoring. Fixed by making the worker count configurable
+(`UVICORN_WORKERS`, `.env.example`) instead of hardcoded at one — 4 workers on this
+4-vCPU host raised throughput to ~85-98 req/s and cut p50 at c=10 from 257ms to 100ms.
+Local dev still defaults to 1 worker (simpler logs, one model copy in RAM); production
+should set it to the host's vCPU count. Each worker loads its own copy of the ranker and
+two-tower artifacts — irrelevant at ~612KB today, a real cost if the models grow.
+
+These numbers were measured with the full stack up — 10 containers plus the simulator
+producing continuously — sharing those same 4 shared vCPUs, so this is a loaded-host
+number, not an isolated benchmark; a dedicated host or less contention would likely look
+better in both configurations. No end-to-end (public URL, TLS, nginx) number is reported
+here: nginx/TLS were never set up for this deploy, so there's nothing to measure, and no
+placeholder is left standing in where that number would go.
