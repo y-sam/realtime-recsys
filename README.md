@@ -7,6 +7,74 @@ orchestrated batch training, and observability.
 **Demo:** `https://<host>/recommend?user_id=u_42&k=10` (placeholder — not deployed publicly
 yet, see [DEPLOY.md](DEPLOY.md)) · **Showcase UI:** `:8501` · **Event console:** `:8080` · **Metrics:** `:3000`
 
+## The simulated business
+
+**The scenario.** This recommends titles in a paid content marketplace: users
+browse a catalog of films and documentaries available to buy or rent
+individually, see a personalized slate, and the business earns when the right
+title reaches the right user before they buy. Every field in the event schema
+follows from that: `price_tier` is a rental/purchase price band, and
+`add_to_cart` / `purchase` are real transaction steps, not stand-ins for
+something else.
+
+**The catalog.** ~2,000 items across 10 genres (action, comedy, drama, docu,
+sports, music, kids, horror, reality, news), each with a `price_tier` (1-4)
+independent of genre or popularity. Popularity follows a Zipf distribution
+(`1/rank^0.9`), so a small head of titles takes most of the traffic and the
+long tail is real rather than padding. Each user carries a latent per-genre
+affinity — 2-4 favorite genres weighted 1.5-4x higher than the rest — which is
+the signal the two-tower model exists to learn.
+
+**The event stream.** `impression → click → add_to_cart → purchase`, each
+event carrying the `impression_id` of the exact slot that produced it. An
+impression is a title shown in a slate; a click opens its detail page;
+`add_to_cart` adds it to a cart pre-checkout; `purchase` is the completed
+transaction, `value` set from `price_tier`. Purchase lands ~45s (mean) after
+the click, modeling real checkout friction — which means the label a model
+would train on doesn't exist yet at the moment a recommendation is served.
+`training/build_dataset.py`'s window functions (`ROWS BETWEEN UNBOUNDED
+PRECEDING AND 1 PRECEDING`) exist specifically so nothing trains on an
+outcome it couldn't have known at serving time.
+
+**What success would mean, commercially.** Click-through on recommended
+titles, cart-to-purchase conversion, and catalog utilization (do
+recommendations pull from more than the top 50 titles, or just reinforce
+what's already popular) are the real-world metrics this system would move.
+None of them are measured against real users here: the simulator samples
+independently and never calls `/recommend` (see
+[ADR 0002](docs/adr/0002-simulator-recommender-decoupling.md)), so every
+offline number elsewhere in this README — AUC, NDCG@10, recall@K — is a
+proxy for those metrics, not a live business result.
+
+**Why synthetic, not a public dataset.** A public click-log dataset is
+static: load it, split it, done — and that removes the actual engineering
+problem this project exists to solve. A live, continuous, unbounded stream is
+what turns the online/offline feature split, feature freshness, and
+cold-start into real problems instead of a train/test split. There's no
+fixed "the data" to load; the online store has to stay current against a
+stream that never stops, and cold-start has to be handled continuously
+because new users and items keep arriving while the system is running. That
+property doesn't survive contact with a static dataset.
+
+The live simulator (`services/simulator/`) runs continuously at a small,
+conversational scale — 2,000 items, 5,000 users — so the whole stack (Kafka,
+feature freshness, retraining) stays exercised in real time. A separate,
+standalone batch generator, [`training/generate_dataset.py`](training/generate_dataset.py),
+can seed the same `events`/`items` schema at a much larger scale (20,000
+items, 50,000 users, 28 days, ~20M rows) with the same class of behavioral
+mechanics — Zipf popularity with ~10%-of-head rotation per day, position bias,
+within-session fatigue, diurnal and weekend seasonality, and both cold-start
+users (arriving mid-window) and cold-start items (held out of every event
+entirely) — for scale-sensitive experiments the live stream isn't sized for.
+It's a distinct tool, not a drop-in replacement for the live stream: its
+categories are generic codes (`cat_00`-`cat_39`) rather than the live
+simulator's named genres, and it loads via `psycopg2` rather than the rest of
+`training/`'s `psycopg3`. It ships its own validation pass (position-bias
+ratio, fatigue-decay curve, diurnal amplitude, referential integrity) so a
+generated dataset can be checked before it's trained on. Used for the
+catalog-scale question raised and left open in
+[ADR 0003](docs/adr/0003-two-tower-catalog-scale-investigation.md).
+
 ## Architecture
 
 ```
