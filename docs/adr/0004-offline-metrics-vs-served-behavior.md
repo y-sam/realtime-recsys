@@ -155,3 +155,38 @@ directly to production. The clean validation in this write-up does not: a
 real deployment needs its own propensity-estimation validation (e.g.
 periodic randomized-position experiments) before the correction can be
 trusted the way it can be here.
+
+## A fourth instance: a dashboard query, not a model or a dataset
+
+The Grafana panel "Cold-start share of traffic" showed a version of the same
+pattern, but as two distinct, compounding findings, not one.
+
+**Instrumentation**: `prometheus_client` counters are in-process and
+lazily create a label the first time it's incremented. Any container
+restart (this project's `UVICORN_WORKERS` change among them) resets that
+registry to empty, and Prometheus marks a label stale once it stops
+appearing in scrapes — so a label can go missing from queries for as long
+as that code path goes unexercised after a restart. Not a PromQL defect;
+a property of where the counter's state lives.
+
+**Query**: `/recommend` is only called manually (the simulator never
+calls it — ADR 0002), so traffic is sparse and bursty. Against a short
+`rate()` window that produced a bare `NaN` whenever both label values had
+zero samples in-window (0/0, not "no data"), and readings computed from
+too few requests to be representative.
+
+The initial suspicion — that the denominator was silently dropping a
+missing label's contribution — was tested directly and didn't hold:
+`sum()` over an absent series contributes nothing, which is the same
+arithmetic as contributing zero. There was no computation bug in the
+original expression; the real issues were the 0/0 case and window
+representativeness under sparse traffic.
+
+Fixed by widening to `increase()` over 1h (matching this dashboard's
+existing two-tower hit-rate convention), `or vector(0)` on the numerator
+so a genuine zero renders as `0%`, and a `> 0` guard on the denominator so
+true zero-traffic windows render as **No data** instead of `NaN`.
+
+**Known, unfixed instance of the same query shape**: "Two-tower retrieval
+hit rate (1h)" has the identical unguarded division and would show the
+same bare `NaN` if `eligible` ever hit zero in a window. Not fixed here.
