@@ -61,12 +61,12 @@
       ]
     },
     {
-      "id": 12, "type": "stat", "title": "Cold-start share of traffic (15m)",
+      "id": 12, "type": "stat", "title": "Cold-start share of traffic (1h)",
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 10 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
       "targets": [
         {
-          "expr": "sum(rate(recsys_recommend_requests_total{cold_start=\"true\"}[15m])) / sum(rate(recsys_recommend_requests_total[15m]))"
+          "expr": "(sum(increase(recsys_recommend_requests_total{cold_start=\"true\"}[1h])) or vector(0)) / (sum(increase(recsys_recommend_requests_total[1h])) > 0)"
         }
       ]
     },
