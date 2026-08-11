@@ -311,3 +311,29 @@ includes network + TLS + nginx)".
 Over the SSH tunnel: Grafana (`:3000`) shows live panels, and `make rows` /
 the Streamlit dashboard's Event Stream tab confirm the simulator and sink
 are both still producing on the new host.
+
+## 7. Tear down, and restoring from a snapshot
+
+A running instance only earns its cost while something's actively being
+measured or demoed against it — once deploy process and latency numbers are
+validated, there's nothing a live host is doing that a snapshot doesn't
+preserve for a fraction of the price (cents/month for the snapshot vs. the
+full instance rate). Snapshot before deleting the instance.
+
+Restoring brings back the fully provisioned host as it was at snapshot
+time — Compose stack, `ufw` rules, SSH key auth all intact — in a few
+minutes. The one thing that changes is the IP:
+
+```bash
+ssh -L 3000:localhost:3000 -L 8501:localhost:8501 rtrec@<new-ip>
+# add -L 8080:localhost:8080 -L 9090:localhost:9090 too if you need
+# Redpanda Console / Prometheus, per §3
+```
+
+`docker compose ps` after reconnecting to confirm all containers came back
+healthy — a restored instance is still a boot event for everything in the
+stack, same as a reboot of the original host would be. Redis has no
+persistence by design (§4/§5 elsewhere in this project), so online-store
+state is gone regardless of snapshot/restore and refills from the live
+stream within seconds, same as any other restart. Postgres data is part of
+the snapshot and comes back intact.
