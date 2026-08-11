@@ -4,9 +4,6 @@ A low-latency recommendation system fed by a continuous stream of synthetic user
 events. Not a notebook: a running service with an online/offline feature store,
 orchestrated batch training, and observability.
 
-**Demo:** `https://<host>/recommend?user_id=u_42&k=10` (placeholder — not deployed publicly
-yet, see [DEPLOY.md](DEPLOY.md)) · **Showcase UI:** `:8501` · **Event console:** `:8080` · **Metrics:** `:3000`
-
 ## The simulated business
 
 **The scenario.** This recommends titles in a paid content marketplace: users
